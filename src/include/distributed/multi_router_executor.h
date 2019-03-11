@@ -35,6 +35,7 @@ typedef struct XactShardConnSet
 /* Config variables managed via guc.c */
 extern bool AllModificationsCommutative;
 extern bool EnableDeadlockPrevention;
+extern int LowerLimitForParallelMultiRowInsert;
 
 /* number of nested stored procedure call levels we are currently in */
 extern int StoredProcedureLevel;

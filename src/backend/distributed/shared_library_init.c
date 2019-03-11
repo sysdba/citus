@@ -525,6 +525,16 @@ RegisterCitusConfigVariables(void)
 		0,
 		NULL, NULL, NULL);
 
+	DefineCustomIntVariable(
+		"citus.lower_limit_for_parallel_multi_row_insert",
+		gettext_noop("TODO."),
+		NULL,
+		&LowerLimitForParallelMultiRowInsert,
+		1000, 0, INT_MAX,
+		PGC_USERSET,
+		0,
+		NULL, NULL, NULL);
+
 	DefineCustomRealVariable(
 		"citus.distributed_deadlock_detection_factor",
 		gettext_noop("Sets the time to wait before checking for distributed "

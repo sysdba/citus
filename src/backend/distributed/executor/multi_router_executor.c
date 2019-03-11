@@ -78,6 +78,9 @@
 /* controls use of locks to enforce safe commutativity */
 bool AllModificationsCommutative = false;
 
+int LowerLimitForParallelMultiRowInsert = 1000;
+
+
 /* we've deprecated this flag, keeping here for some time not to break existing users */
 bool EnableDeadlockPrevention = true;
 
@@ -101,6 +104,7 @@ static void AcquireExecutorShardLock(Task *task, CmdType commandType);
 static void AcquireExecutorMultiShardLocks(List *taskList);
 static bool RequiresConsistentSnapshot(Task *task);
 static void RouterMultiModifyExecScan(CustomScanState *node);
+static bool MultiRowInsertShouldUseParallelExecution(Query *jobQuery);
 static void RouterSequentialModifyExecScan(CustomScanState *node);
 static void ExtractParametersFromParamListInfo(ParamListInfo paramListInfo,
 											   Oid **parameterTypes,
@@ -579,7 +583,7 @@ RouterModifyExecScan(CustomScanState *node)
 		ExecuteSubPlans(distributedPlan);
 
 		if (list_length(taskList) <= 1 ||
-			IsMultiRowInsert(workerJob->jobQuery) ||
+		(IsMultiRowInsert(workerJob->jobQuery) && !MultiRowInsertShouldUseParallelExecution(workerJob->jobQuery)) ||
 			MultiShardConnectionType == SEQUENTIAL_CONNECTION)
 		{
 			parallelExecution = false;
@@ -600,6 +604,20 @@ RouterModifyExecScan(CustomScanState *node)
 	resultSlot = ReturnTupleFromTuplestore(scanState);
 
 	return resultSlot;
+}
+
+
+static bool
+MultiRowInsertShouldUseParallelExecution(Query *jobQuery)
+{
+	RangeTblEntry *valuesRTE = ExtractDistributedInsertValuesRTE(jobQuery);
+
+	if (list_length(valuesRTE->values_lists) > LowerLimitForParallelMultiRowInsert)
+	{
+		return true;
+	}
+
+	return false;
 }
 
 
