@@ -631,7 +631,8 @@ RouterSequentialModifyExecScan(CustomScanState *node)
 	 * customers already use functions that touch multiple shards from within
 	 * a function, so we'll ignore functions for now.
 	 */
-	if (IsMultiStatementTransaction() || multipleTasks || taskListRequires2PC)
+	if (IsTransactionBlock() || multipleTasks || taskListRequires2PC ||
+		StoredProcedureLevel > 0)
 	{
 		BeginOrContinueCoordinatedTransaction();
 
@@ -1117,7 +1118,7 @@ ExecuteSingleModifyTask(CitusScanState *scanState, Task *task, CmdType operation
 	/* if some placements failed, ensure future statements don't access them */
 	MarkFailedShardPlacements();
 
-	if (IsMultiStatementTransaction())
+	if (IsTransactionBlock())
 	{
 		XactModificationLevel = XACT_MODIFICATION_DATA;
 	}
@@ -1286,7 +1287,7 @@ ExecuteModifyTasksSequentiallyWithoutResults(List *taskList, CmdType operation)
 	{
 		/* we don't run CREATE INDEX CONCURRENTLY in a distributed transaction */
 	}
-	else if (IsMultiStatementTransaction() || multipleTasks)
+	else if (IsTransactionBlock() || multipleTasks)
 	{
 		BeginOrContinueCoordinatedTransaction();
 

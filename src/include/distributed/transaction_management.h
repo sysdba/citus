@@ -59,12 +59,6 @@ typedef enum
  */
 extern bool SelectOpensTransactionBlock;
 
-/*
- * GUC that determines whether a function should be considered a transaction
- * block.
- */
-extern bool FunctionOpensTransactionBlock;
-
 /* config variable managed via guc.c */
 extern int MultiShardCommitProtocol;
 
@@ -79,13 +73,6 @@ extern CoordinatedTransactionState CurrentCoordinatedTransactionState;
 /* list of connections that are part of the current coordinated transaction */
 extern dlist_head InProgressTransactions;
 
-/* number of nested stored procedure call levels we are currently in */
-extern int StoredProcedureLevel;
-
-/* number of nested function call levels we are currently in */
-extern int FunctionCallLevel;
-
-
 /*
  * Coordinated transaction management.
  */
@@ -93,7 +80,6 @@ extern void BeginCoordinatedTransaction(void);
 extern void BeginOrContinueCoordinatedTransaction(void);
 extern bool InCoordinatedTransaction(void);
 extern void CoordinatedTransactionUse2PC(void);
-extern bool IsMultiStatementTransaction(void);
 
 /* initialization function(s) */
 extern void InitializeTransactionManagement(void);

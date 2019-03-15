@@ -104,7 +104,7 @@ MultiRealTimeExecute(Job *job)
 	workerNodeList = ActiveReadableNodeList();
 	workerHash = WorkerHash(workerHashName, workerNodeList);
 
-	if (IsMultiStatementTransaction() && SelectOpensTransactionBlock)
+	if (IsTransactionBlock() && SelectOpensTransactionBlock)
 	{
 		BeginOrContinueCoordinatedTransaction();
 	}
