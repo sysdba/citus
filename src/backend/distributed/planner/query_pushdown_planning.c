@@ -53,6 +53,16 @@ typedef enum RecurringTuplesType
 	RECURRING_TUPLES_RESULT_FUNCTION
 } RecurringTuplesType;
 
+/*
+ * FlattenJoinVarsMutatorContext stores context variable needed by
+ * FlattenJoinVarsMutator function.
+ */
+typedef struct FlattenJoinVarsMutatorContext
+{
+	Query *queryTree;
+	PlannerInfo *plannerInfo;
+} FlattenJoinVarsMutatorContext;
+
 
 /* Config variable managed via guc.c */
 bool SubqueryPushdown = false; /* is subquery pushdown enabled */
@@ -80,7 +90,7 @@ static bool IsRecurringRangeTable(List *rangeTable, RecurringTuplesType *recurTy
 static bool HasRecurringTuples(Node *node, RecurringTuplesType *recurType);
 static MultiNode * SubqueryPushdownMultiNodeTree(Query *queryTree);
 static List * FlattenJoinVars(List *columnList, Query *queryTree);
-static Node * FlattenSingleJoinVar(Var *column, Query *queryTree);
+static Node * FlattenJoinVarsMutator(Node *node, FlattenJoinVarsMutatorContext *context);
 static void UpdateVarMappingsForExtendedOpNode(List *columnList,
 											   List *flattenedColumnList,
 											   List *subqueryTargetEntryList);
@@ -1558,7 +1568,7 @@ SubqueryPushdownMultiNodeTree(Query *queryTree)
 
 
 /*
- * FlattenJoinVars iterates over provided columnList to identify
+ * FlattenJoinVars works on provided columnList to identify
  * Var's that are referenced from join RTE, and reverts back to their
  * original RTEs. Then, returns a new list with reverted types. Note that,
  * length of the original list and created list must be equal.
@@ -1583,81 +1593,79 @@ SubqueryPushdownMultiNodeTree(Query *queryTree)
 static List *
 FlattenJoinVars(List *columnList, Query *queryTree)
 {
-	ListCell *columnCell = NULL;
 	List *flattenedExprList = NIL;
+	FlattenJoinVarsMutatorContext context;
 
-	foreach(columnCell, columnList)
+
+	if (columnList == NIL)
 	{
-		Var *column = (Var *) lfirst(columnCell);
-		Node *flattenedColumn = FlattenSingleJoinVar(column, queryTree);
-		flattenedExprList = lappend(flattenedExprList, copyObject(flattenedColumn));
+		return NIL;
 	}
 
+	context.queryTree = queryTree;
+	context.plannerInfo = makeNode(PlannerInfo);
+	context.plannerInfo->parse = (queryTree);
+	context.plannerInfo->planner_cxt = CurrentMemoryContext;
+	context.plannerInfo->hasJoinRTEs = true;
+
+	flattenedExprList = (List *) FlattenJoinVarsMutator((Node *) columnList, &context);
+	Assert(IsA(flattenedExprList, List));
+
+	pfree(context.plannerInfo);
 	return flattenedExprList;
 }
 
 
 /*
- * FlattenSingleJoinVar flattens a single column var as outlined in the caller
+ * FlattenJoinVarsMutator flattens a single column var as outlined in the caller
  * function (FlattenJoinVars). It iterates the join tree to find the
  * lowest Var it can go. This is usually the relation range table var. However
  * if a join operation is given an alias, iteration stops at that level since the
  * query can not reference the inner RTE by name if the join is given an alias.
- *
- * The function can only work on Vars. It calls postgres' own flatten function
- * for other types if encountered.
- *
  */
 static Node *
-FlattenSingleJoinVar(Var *column, Query *queryTree)
+FlattenJoinVarsMutator(Node *node, FlattenJoinVarsMutatorContext *context)
 {
-	RangeTblEntry *rte = rt_fetch(column->varno, queryTree->rtable);
-	Node *newColumn = NULL;
-
-	while (rte->rtekind == RTE_JOIN)
+	if (node == NULL)
 	{
-		/*
-		 * if join has an alias, it is copied over join RTE. We should
-		 * reference this RTE.
-		 */
-		if (rte->alias != NULL)
-		{
-			return (Node *) column;
-		}
-
-		/* join RTE does not have and alias defined at this level, deper look is needed */
-		Assert(column->varattno > 0);
-		newColumn = (Node *) list_nth(rte->joinaliasvars, column->varattno - 1);
-		Assert(newColumn != NULL);
-
-		/*
-		 * Referenced column from higher RTE is not a Var
-		 * we rely on postgres to do right thing here.
-		 */
-		if (!IsA(newColumn, Var))
-		{
-			Node *normalizedNode = NULL;
-			PlannerInfo *root = makeNode(PlannerInfo);
-			root->parse = (queryTree);
-			root->planner_cxt = CurrentMemoryContext;
-			root->hasJoinRTEs = true;
-
-			normalizedNode = strip_implicit_coercions(
-				flatten_join_alias_vars(root, (Node *) newColumn));
-
-			pfree(root);
-
-			return normalizedNode;
-		}
-
-		Assert(IsA(newColumn, Var));
-
-		/* update the current column var and continue with the non-join rte search */
-		column = (Var *) newColumn;
-		rte = rt_fetch(column->varno, queryTree->rtable);
+		return NULL;
 	}
 
-	return (Node *) column;
+	node = strip_implicit_coercions(node);
+
+	if (IsA(node, Var))
+	{
+		Var *column = (Var *) node;
+
+		Query *queryTree = context->queryTree;
+		RangeTblEntry *rte = rt_fetch(column->varno, queryTree->rtable);
+		if (rte->rtekind == RTE_JOIN)
+		{
+			Node *newColumn = NULL;
+
+			/*
+			 * if join has an alias, it is copied over join RTE. We should
+			 * reference this RTE.
+			 */
+			if (rte->alias != NULL)
+			{
+				return (Node *) column;
+			}
+
+			/* join RTE does not have and alias defined at this level, deeper look is needed */
+			Assert(column->varattno > 0);
+			newColumn = (Node *) list_nth(rte->joinaliasvars, column->varattno - 1);
+			Assert(newColumn != NULL);
+			return expression_tree_mutator(newColumn, FlattenJoinVarsMutator,
+										   (void *) context);
+		}
+		else
+		{
+			return node;
+		}
+	}
+
+	return expression_tree_mutator(node, FlattenJoinVarsMutator, (void *) context);
 }
 
 
@@ -1748,45 +1756,61 @@ UpdateColumnToMatchingTargetEntry(Var *column, Node *flattenedExpr, List *target
 	foreach(targetEntryCell, targetEntryList)
 	{
 		TargetEntry *targetEntry = (TargetEntry *) lfirst(targetEntryCell);
+		NodeTag targetEntryType = nodeTag(targetEntry->expr);
+		bool doneProcessing = false;
 
-		if (IsA(targetEntry->expr, Var))
+		switch (targetEntryType)
 		{
-			Var *targetEntryVar = (Var *) targetEntry->expr;
-
-			if (IsA(flattenedExpr, Var) && equal(flattenedExpr, targetEntryVar))
+			case T_Var:
 			{
-				column->varno = 1;
-				column->varattno = targetEntry->resno;
+				Var *targetEntryVar = (Var *) targetEntry->expr;
+
+				if (IsA(flattenedExpr, Var) && equal(flattenedExpr, targetEntryVar))
+				{
+					column->varno = 1;
+					column->varattno = targetEntry->resno;
+					doneProcessing = true;
+				}
 				break;
 			}
-		}
-		else if (IsA(targetEntry->expr, CoalesceExpr))
-		{
-			/*
-			 * flatten_join_alias_vars() flattens full oter joins' columns that is
-			 * in the USING part into COALESCE(left_col, right_col)
-			 */
-			CoalesceExpr *targetCoalesceExpr = (CoalesceExpr *) targetEntry->expr;
 
-			if (IsA(flattenedExpr, CoalesceExpr) && equal(flattenedExpr,
-														  targetCoalesceExpr))
+			case T_CoalesceExpr:
+			case T_FuncExpr:
+
+				/*
+				 * FlattenJoinVars() flattens full oter joins' columns that is
+				 * in the USING part into COALESCE(left_col, right_col)
+				 * It also leaves function calls as they were, but modifies Var references in it.
+				 */
 			{
-				Oid expressionType = exprType(flattenedExpr);
-				int32 expressionTypmod = exprTypmod(flattenedExpr);
-				Oid expressionCollation = exprCollation(flattenedExpr);
+				NodeTag flattenedExprType = nodeTag(flattenedExpr);
 
-				column->varno = 1;
-				column->varattno = targetEntry->resno;
-				column->vartype = expressionType;
-				column->vartypmod = expressionTypmod;
-				column->varcollid = expressionCollation;
+				if (flattenedExprType == targetEntryType && equal(flattenedExpr,
+																  targetEntry->expr))
+				{
+					Oid expressionType = exprType(flattenedExpr);
+					int32 expressionTypmod = exprTypmod(flattenedExpr);
+					Oid expressionCollation = exprCollation(flattenedExpr);
+
+					column->varno = 1;
+					column->varattno = targetEntry->resno;
+					column->vartype = expressionType;
+					column->vartypmod = expressionTypmod;
+					column->varcollid = expressionCollation;
+
+					doneProcessing = true;
+				}
 				break;
 			}
+
+			default:
+				elog(ERROR, "unrecognized node type on the target list: %d",
+					 targetEntryType);
 		}
-		else
+
+		if (doneProcessing)
 		{
-			elog(ERROR, "unrecognized node type on the target list: %d",
-				 nodeTag(targetEntry->expr));
+			break;
 		}
 	}
 }
